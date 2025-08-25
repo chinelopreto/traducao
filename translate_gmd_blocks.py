@@ -86,7 +86,16 @@ def build_user_prompt(batch_en: List[str]) -> str:
     sep = "\n---\n"
     return f"Traduza cada linha individualmente, mantendo placeholders intactos e nomes próprios intactos. Linhas:\n{sep.join(batch_en)}"
 
-def call_openai(client, model: str, batch_en: List[str], temperature: float=0.2, max_retries: int=5) -> List[str]:
+def call_openai(client, model: str, batch_en: List[str], temperature: float=0.2, max_retries: int=5, test_mode: bool=False) -> List[str]:
+    if test_mode:
+        # Return mock Portuguese translations for testing
+        mock_translations = []
+        for text in batch_en:
+            # Simple mock translation: keep placeholders but add "PT:" prefix
+            mock_pt = f"PT:{text}" if text and not text.startswith("PT:") else text
+            mock_translations.append(mock_pt or "")
+        return mock_translations
+    
     system_prompt = build_system_prompt()
     user_prompt = build_user_prompt(batch_en)
     backoff = 2.0
@@ -128,7 +137,7 @@ def ensure_placeholders(original: str, translated: str) -> str:
 
 # ---------------------- Main ----------------------
 
-def process_block(input_path: str, output_path: str, client, model: str, batch_size: int=20, overwrite: bool=False):
+def process_block(input_path: str, output_path: str, client, model: str, batch_size: int=20, overwrite: bool=False, test_mode: bool=False):
     if os.path.exists(output_path) and not overwrite:
         print(f"[skip] {os.path.basename(output_path)} already exists. Use --overwrite to regenerate.")
         return
@@ -170,7 +179,7 @@ def process_block(input_path: str, output_path: str, client, model: str, batch_s
             unmask_maps.append(mapp)
 
         # Call model
-        outs = call_openai(client, model, masked_batch)
+        outs = call_openai(client, model, masked_batch, test_mode=test_mode)
 
         # If model returned a single blob with same count separated by lines, map directly;
         # Otherwise, try to pad/truncate to batch size.
@@ -200,14 +209,18 @@ def main():
     ap.add_argument("--block-end", type=int, default=7, help="Last block index (1..7)")
     ap.add_argument("--batch-size", type=int, default=20, help="Rows per API request")
     ap.add_argument("--overwrite", action="store_true", help="Regenerate even if output exists")
+    ap.add_argument("--test-mode", action="store_true", help="Use mock translations for testing (no API calls)")
     args = ap.parse_args()
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        print("ERROR: Please set OPENAI_API_KEY environment variable.", file=sys.stderr)
-        sys.exit(1)
-
-    client = OpenAI(api_key=api_key)
+    if not args.test_mode:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            print("ERROR: Please set OPENAI_API_KEY environment variable.", file=sys.stderr)
+            sys.exit(1)
+        client = OpenAI(api_key=api_key)
+    else:
+        print("[INFO] Running in test mode - no API calls will be made")
+        client = None
 
     for idx in range(args.block_start, args.block_end+1):
         inp = os.path.join(args.input_dir, f"gmd1_block_{idx}.csv")
@@ -215,7 +228,7 @@ def main():
         if not os.path.exists(inp):
             print(f"[warn] Missing {inp}, skipping.")
             continue
-        process_block(inp, out, client, args.model, batch_size=args.batch_size, overwrite=args.overwrite)
+        process_block(inp, out, client, args.model, batch_size=args.batch_size, overwrite=args.overwrite, test_mode=args.test_mode)
 
 if __name__ == "__main__":
     main()
